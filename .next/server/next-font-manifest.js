@@ -1,0 +1,1 @@
+self.__NEXT_FONT_MANIFEST='{"pages":{},"app":{"/Users/user/Downloads/legendas/srt-pt-ai/app/layout":["static/media/e4af272ccee01ff0-s.p.woff2"],"/Users/user/Downloads/legendas/srt-pt-ai/app/page":["static/media/fd9b8ea6976d80ff-s.p.woff2","static/media/b71b0d7c33ac807a-s.p.woff2"]},"appUsingSizeAdjust":true,"pagesUsingSizeAdjust":false}';
