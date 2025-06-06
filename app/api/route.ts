@@ -3,9 +3,8 @@ import { groupSegmentsByTokenLength } from "@/lib/srt";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { generateText } from "ai";
 
-// Configurando a API para funcionar tanto em modo dinâmico quanto estático
-// Configuração baseada no ambiente - isso permite que a API funcione em modo estático e dinâmico
-export const dynamic = process.env.NEXT_BUILD_MODE === 'static' ? 'force-static' : 'force-dynamic';
+// Configuração para Vercel - sempre dinâmico para suportar API routes
+export const dynamic = 'force-dynamic';
 export const runtime = "nodejs";
 
 const MAX_TOKENS_IN_SEGMENT = 700;

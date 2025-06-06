@@ -9,11 +9,13 @@ const nextConfig = {
     NEXT_BUILD_MODE: process.env.NEXT_BUILD_MODE || 'dynamic'
   },
   // Configuração condicional para exportação estática baseada no ambiente
-  ...(process.env.NEXT_BUILD_MODE === 'static' ? {
+  // Na Vercel, sempre usar modo dinâmico para suportar API routes
+  ...(process.env.VERCEL ? {} : process.env.NEXT_BUILD_MODE === 'static' ? {
     output: 'export',
     distDir: 'out',
-    // Desabilitar caracteres especiais na exportação estática para evitar problemas de rota
+    // Configurações específicas para GitHub Pages
     trailingSlash: true,
+    skipTrailingSlashRedirect: true,
   } : {}),
   // Desativar o image optimizer para permitir exportação estática
   images: {
