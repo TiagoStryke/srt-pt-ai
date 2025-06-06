@@ -4,10 +4,10 @@ import {
 	type ReconnectInterval,
 	createParser,
 } from "eventsource-parser";
-import { encoding_for_model } from "tiktoken";
 
 /**
  * Groups segments into groups of length `length` or less.
+ * Uses character count approximation instead of tiktoken for Vercel compatibility.
  */
 export function groupSegmentsByTokenLength(
 	segments: Segment[],
@@ -16,11 +16,10 @@ export function groupSegmentsByTokenLength(
 	const groups: Segment[][] = [];
 	let currentGroup: Segment[] = [];
 	let currentGroupTokenCount = 0;
-	const encoder = encoding_for_model("gpt-4o-mini");
 
+	// Simple approximation: ~4 characters per token (common for most languages)
 	function numTokens(text: string) {
-		const tokens = encoder.encode(text);
-		return tokens.length;
+		return Math.ceil(text.length / 4);
 	}
 
 	for (const segment of segments) {
@@ -40,7 +39,6 @@ export function groupSegmentsByTokenLength(
 		groups.push(currentGroup);
 	}
 
-	encoder.free(); // clear encoder from memory
 	return groups;
 }
 
