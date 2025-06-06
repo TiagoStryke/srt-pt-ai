@@ -419,7 +419,7 @@ export default function Home() {
 				setIsValidating(true);
 				
 				// Faz uma solicitação inicial para verificar a chave API sem processar o arquivo inteiro
-				const validationResponse = await fetch("/api", {
+				const validationResponse = await fetch("/api/translate", {
 					method: "POST",
 					body: JSON.stringify({ 
 						content: "Teste de validação",  // Um pequeno texto para validação
@@ -461,7 +461,7 @@ export default function Home() {
 				setStatus("busy");
 				
 				// Processa o arquivo para tradução
-				const response = await fetch("/api", {
+				const response = await fetch("/api/translate", {
 					method: "POST",
 					body: JSON.stringify({ content, language, apiKey }),
 					headers: { "Content-Type": "application/json" },
