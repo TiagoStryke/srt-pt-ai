@@ -1,5 +1,3 @@
-![SRT PT AI Translator - Preview](/preview.png)
-
 # SRT PT AI Translator
 
 Tradutor de arquivos SRT para Português Brasileiro, usando a magia da IA ✨
@@ -21,7 +19,7 @@ Follow these simple steps to set up SRT AI Translator and start enjoying better 
 
 ### Installation
 
-1. Clone the repo `git clone https://github.com/yazinsai/srt-pt-ai`
+1. Clone the repo 
 2. Rename `.env.example` to `.env.local` and paste your OpenAI Key.
 3. Install dependencies using `npm install`
 4. Start locally using `npm run dev`
