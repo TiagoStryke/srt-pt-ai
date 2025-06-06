@@ -1,0 +1,177 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body {
+  margin: 0;
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+/* Classes personalizadas para tema escuro */
+.dark {
+  color-scheme: dark;
+}
+
+/* Variáveis CSS para tema claro/escuro */
+:root {
+  --bg-primary: #ffffff;
+  --bg-secondary: #f8f8f8;
+  --bg-tertiary: #efefef;
+  --text-primary: #444444;
+  --text-secondary: #666666;
+  --border-color: #e2e2e2;
+  --gradient-start: #4f46e5;
+  --gradient-end: #3b82f6;
+}
+
+.dark {
+  --bg-primary: #1a1a1a;
+  --bg-secondary: #222222;
+  --bg-tertiary: #2a2a2a;
+  --text-primary: #e0e0e0;
+  --text-secondary: #b0b0b0;
+  --border-color: #3a3a3a;
+  --gradient-start: #6366f1;
+  --gradient-end: #60a5fa;
+}
+
+/* Estilos específicos para melhorar visibilidade do campo API key - estilo elegante */
+#api-key {
+  font-family: 'Courier New', monospace;
+  font-size: 0.85rem;
+  letter-spacing: 0.02em;
+  font-weight: normal;
+}
+
+#api-key::placeholder {
+  font-family: system-ui, sans-serif;
+  letter-spacing: normal;
+  font-style: italic;
+}
+
+.dark #api-key {
+  color: #e0e0e0;
+  background-color: var(--bg-tertiary);
+}
+
+/* Estilos para o título */
+h1 {
+  line-height: 1.2;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.05);
+}
+
+h1.title-shadow {
+  text-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.gradient-text {
+  background: linear-gradient(90deg, var(--gradient-start), var(--gradient-end));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  display: inline;
+}
+
+/* Animação sutil para o título */
+@keyframes gradientFlow {
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
+.bg-gradient-to-r {
+  background-size: 200% auto;
+  animation: gradientFlow 8s ease infinite;
+}
+
+/* Animation for progress bar */
+@keyframes progress-bar-stripes {
+  from {
+    background-position: 1rem 0;
+  }
+  to {
+    background-position: 0 0;
+  }
+}
+
+/* Ajustes de tema para componentes específicos */
+.dark .bg-white {
+  background-color: var(--bg-secondary);
+}
+
+.dark .bg-\[\#EFEFEF\] {
+  background-color: var(--bg-tertiary);
+}
+
+.dark .bg-\[\#fafafa\] {
+  background-color: var(--bg-secondary);
+}
+
+.dark .border-gray-200 {
+  border-color: var(--border-color);
+}
+
+.dark .text-\[\#444444\] {
+  color: var(--text-primary);
+}
+
+.dark .text-gray-500 {
+  color: var(--text-secondary);
+}
+
+/* Animation for API key error feedback */
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  10%, 30%, 50%, 70%, 90% { transform: translateX(-5px); }
+  20%, 40%, 60%, 80% { transform: translateX(5px); }
+}
+
+.shake-animation {
+  animation: shake 0.82s cubic-bezier(.36,.07,.19,.97) both;
+}
+
+/* Animation for button highlight on API error */
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.8; }
+}
+
+.pulse-animation {
+  animation: pulse 1.5s infinite;
+}
+
+/* Transition for feedback states */
+.border, .bg-red-50, .bg-green-50 {
+  transition: all 0.3s ease;
+}
+
+/* Transição para elementos com gradiente */
+.bg-gradient-to-r {
+  transition: background 0.3s ease, opacity 0.3s ease;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f1f1f1;
+  border-radius: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #888;
+  border-radius: 10px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #555;
+}
