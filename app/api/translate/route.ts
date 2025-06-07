@@ -1,5 +1,5 @@
-import { parseSegment } from "@/lib/client";
-import { groupSegmentsByTokenLength } from "@/lib/srt";
+import { parseSegment } from "../../../lib/client";
+import { groupSegmentsByTokenLength } from "../../../lib/srt";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { generateText } from "ai";
 
@@ -194,28 +194,67 @@ export async function POST(request: Request) {
 			}
 		}
 		
-		const segments = content.split(/\r\n\r\n|\n\n/).map(parseSegment);
+		const segments = content.split(/\r\n\r\n|\n\n/).map(parseSegment).filter(seg => seg.id && seg.timestamp);
 		const groups = groupSegmentsByTokenLength(segments, MAX_TOKENS_IN_SEGMENT);
+		
+		console.log(`Total de segmentos para traduzir: ${segments.length}`);
+		console.log(`Grupos de tradução criados: ${groups.length}`);
 
-		let currentIndex = 0;
+		let processedSegments = 0;
 		const encoder = new TextEncoder();
+		const totalSegments = segments.length;
 
 		const stream = new ReadableStream({
 			async start(controller) {
-				for (const group of groups) {
+				for (let groupIndex = 0; groupIndex < groups.length; groupIndex++) {
+					const group = groups[groupIndex];
 					const text = group.map((segment) => segment.text).join("|");
+					
+					console.log(`Processando grupo ${groupIndex + 1}/${groups.length} com ${group.length} segmentos`);
+					
 					const translatedText = await retrieveTranslation(text, language, apiKey);
-					if (!translatedText) continue;
+					if (!translatedText) {
+						console.error(`Falha ao traduzir grupo ${groupIndex + 1}`);
+						continue;
+					}
 
 					const translatedSegments = translatedText.split("|");
-					for (const segment of translatedSegments) {
-						if (segment.trim()) {
-							const originalSegment = segments[currentIndex];
-							const srt = `${++currentIndex}\n${originalSegment?.timestamp || ""}\n${segment.trim()}\n\n`;
+					
+					// Verificar se o número de segmentos traduzidos corresponde ao grupo original
+					if (translatedSegments.length !== group.length) {
+						console.warn(`Discrepância no grupo ${groupIndex + 1}: esperados ${group.length} segmentos, recebidos ${translatedSegments.length}`);
+					}
+					
+					// Processar cada segmento traduzido com seu correspondente original
+					for (let i = 0; i < group.length; i++) {
+						const originalSegment = group[i];
+						const translatedSegment = translatedSegments[i] || translatedSegments[translatedSegments.length - 1] || "";
+						
+						if (translatedSegment.trim()) {
+							const srt = `${originalSegment.id}\n${originalSegment.timestamp}\n${translatedSegment.trim()}\n\n`;
 							controller.enqueue(encoder.encode(srt));
+							processedSegments++;
+						} else {
+							console.warn(`Segmento vazio para ID ${originalSegment.id}, usando texto original como fallback`);
+							const srt = `${originalSegment.id}\n${originalSegment.timestamp}\n${originalSegment.text}\n\n`;
+							controller.enqueue(encoder.encode(srt));
+							processedSegments++;
 						}
 					}
+					
+					console.log(`Progresso: ${processedSegments}/${totalSegments} segmentos processados (${Math.round((processedSegments/totalSegments)*100)}%)`);
 				}
+				
+				console.log(`Tradução finalizada: ${processedSegments}/${totalSegments} segmentos processados`);
+				
+				// Verificar se todos os segmentos foram processados
+				if (processedSegments !== totalSegments) {
+					console.error(`ERRO: Nem todos os segmentos foram processados! Esperados: ${totalSegments}, Processados: ${processedSegments}`);
+					// Enviar erro como último chunk para notificar o frontend
+					const errorMsg = `ERRO_INCOMPLETE: ${processedSegments}/${totalSegments}`;
+					controller.enqueue(encoder.encode(errorMsg));
+				}
+				
 				controller.close();
 			},
 		});

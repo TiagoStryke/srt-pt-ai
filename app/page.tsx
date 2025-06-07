@@ -233,6 +233,25 @@ export default function Home() {
 			doneReading = done;
 			const chunk = decoder.decode(value);
 
+			// Verificar se é uma mensagem de erro de validação
+			if (chunk.includes('ERRO_INCOMPLETE:')) {
+				const errorMatch = chunk.match(/ERRO_INCOMPLETE:\s*(\d+)\/(\d+)/);
+				if (errorMatch) {
+					const processedCount = parseInt(errorMatch[1]);
+					const totalCount = parseInt(errorMatch[2]);
+					const errorMessage = `Tradução incompleta! Apenas ${processedCount} de ${totalCount} legendas foram traduzidas. Tente novamente.`;
+					
+					// Resetar o estado e mostrar erro
+					setStatus("idle");
+					setActiveTranslationFile("");
+					setTranslationProgress(0);
+					setApiError(errorMessage);
+					
+					console.error("Erro de tradução incompleta:", errorMessage);
+					throw new Error(errorMessage);
+				}
+			}
+
 			content += `${chunk}\n\n`;
 			setTranslatedSrt((prev) => prev + chunk);
 			if (chunk.trim().length) {

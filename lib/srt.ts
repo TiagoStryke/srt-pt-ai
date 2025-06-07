@@ -1,9 +1,9 @@
-import type { Segment } from "../types";
 import {
 	type ParsedEvent,
 	type ReconnectInterval,
 	createParser,
 } from "eventsource-parser";
+import type { Segment } from "../types";
 
 /**
  * Groups segments into groups of length `length` or less.
