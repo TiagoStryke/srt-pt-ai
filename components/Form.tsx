@@ -69,6 +69,7 @@ const SrtForm: React.FC = () => {
   };
 
   const resetTranslation = () => {
+    setFile(null); // Clear the selected file
     setTranslationState({
       status: 'idle',
       translated: 0,
