@@ -386,8 +386,11 @@ export async function POST(request: Request) {
 
 	return new Response(stream, {
 		headers: {
-			'Content-Type': 'text/plain; charset=utf-8',
-			'Transfer-Encoding': 'chunked',
+			'Content-Type': 'text/event-stream',
+			'Cache-Control': 'no-cache',
+			'Connection': 'keep-alive',
+			'Access-Control-Allow-Origin': '*',
+			'Access-Control-Allow-Headers': 'Content-Type',
 		},
 	});
 }

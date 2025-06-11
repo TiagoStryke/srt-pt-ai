@@ -10,25 +10,33 @@ function classNames(...classes: string[]) {
 }
 
 export default function Home() {
-	return (
-<div className="p-4 w-full max-w-5xl mx-auto">
-			<div className="text-center py-8">
-				<h1
-					className={classNames(
+	return (		<div className="p-4 w-full max-w-5xl mx-auto">
+			<div className="py-8">
+				{/* Header with title and theme toggle */}
+				<div className="flex justify-between items-start mb-6">
+					<div className="text-center flex-1">
+						<h1
+							className={classNames(
 "font-black text-4xl text-[#444444] dark:text-gray-200 mb-4",
 playfair.className
 )}
-				>
-					🔥 SRT PT AI
-				</h1>
-				<h2 className={classNames("text-2xl text-gray-600 dark:text-gray-400 mb-2", libre.className)}>
-					AI-Powered Subtitle Translation
-				</h2>
-				<p className="text-gray-500 dark:text-gray-500 text-lg">
-					Translate your SRT subtitle files to Brazilian Portuguese using Google Gemini AI
-				</p>
-				<div className="mt-6">
-					<ThemeToggle />
+						>
+							🔥 SRT PT AI
+						</h1>
+					</div>
+					<div className="flex-shrink-0">
+						<ThemeToggle />
+					</div>
+				</div>
+				
+				{/* Subtitle and description - centered */}
+				<div className="text-center">
+					<h2 className={classNames("text-2xl text-gray-600 dark:text-gray-400 mb-2", libre.className)}>
+						AI-Powered Subtitle Translation
+					</h2>
+					<p className="text-gray-500 dark:text-gray-500 text-lg">
+						Translate your SRT subtitle files to Brazilian Portuguese using Google Gemini AI
+					</p>
 				</div>
 			</div>
 

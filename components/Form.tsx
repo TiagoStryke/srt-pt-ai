@@ -25,6 +25,7 @@ const SrtForm: React.FC = () => {
   const [file, setFile] = useState<File | null>(null);
   const [language, setLanguage] = useState<string>("Brazilian Portuguese");
   const [apiKey, setApiKey] = useState<string>('');
+  const [showApiKey, setShowApiKey] = useState<boolean>(false);
   const [dragging, setDragging] = useState<boolean>(false);
   const [translationState, setTranslationState] = useState<TranslationState>({
     status: 'idle',
@@ -67,6 +68,17 @@ const SrtForm: React.FC = () => {
     });
   };
 
+  const resetTranslation = () => {
+    setFile(null); // Clear the selected file
+    setTranslationState({
+      status: 'idle',
+      translated: 0,
+      total: 0,
+      percentage: 0,
+      message: 'Ready to translate'
+    });
+  };
+
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     
@@ -75,8 +87,8 @@ const SrtForm: React.FC = () => {
       return;
     }
 
-    if (translationState.status === 'translating') {
-      return; // Already translating
+    if (translationState.status !== 'idle') {
+      return; // Not in idle state, don't start new translation
     }
 
     try {
@@ -117,41 +129,79 @@ const SrtForm: React.FC = () => {
       }
 
       let finalResult = '';
+      let buffer = ''; // Buffer to accumulate incomplete lines
 
       while (true) {
         const { done, value } = await reader.read();
         
         if (done) break;
 
-        const chunk = decoder.decode(value, { stream: true });
-        const lines = chunk.split('\n');
+        // Decode the chunk and add to buffer
+        buffer += decoder.decode(value, { stream: true });
+        
+        // Split by double newline to get complete SSE messages
+        const messages = buffer.split('\n\n');
+        
+        // Keep the last incomplete message in buffer
+        buffer = messages.pop() || '';
+        
+        // Process complete messages
+        for (const message of messages) {
+          const lines = message.split('\n');
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              try {
+                const jsonStr = line.slice(6).trim();
+                if (jsonStr) { // Only parse non-empty JSON
+                  const data = JSON.parse(jsonStr);
+                  
+                  if (data.type === 'result') {
+                    finalResult = data.content;
+                    // Update the translation state with the final result
+                    setTranslationState(prev => ({
+                      ...prev,
+                      result: finalResult
+                    }));
+                  } else if (data.type && data.translated !== undefined) {
+                    setTranslationState({
+                      status: data.type,
+                      translated: data.translated || 0,
+                      total: data.total || 0,
+                      percentage: data.percentage || 0,
+                      currentChunk: data.currentChunk,
+                      totalChunks: data.totalChunks,
+                      message: data.message || '',
+                      retryAfter: data.retryAfter
+                    });
+                  }
+                }
+              } catch (parseError) {
+                // Silently skip malformed SSE data
+              }
+            }
+          }
+        }
+      }
 
+      // Process any remaining data in buffer
+      if (buffer.trim()) {
+        const lines = buffer.split('\n');
         for (const line of lines) {
           if (line.startsWith('data: ')) {
             try {
-              const data = JSON.parse(line.slice(6));
-              
-              if (data.type === 'result') {
-                finalResult = data.content;
-                // Update the translation state with the final result
-                setTranslationState(prev => ({
-                  ...prev,
-                  result: finalResult
-                }));
-              } else if (data.type && data.translated !== undefined) {
-                setTranslationState({
-                  status: data.type,
-                  translated: data.translated || 0,
-                  total: data.total || 0,
-                  percentage: data.percentage || 0,
-                  currentChunk: data.currentChunk,
-                  totalChunks: data.totalChunks,
-                  message: data.message || '',
-                  retryAfter: data.retryAfter
-                });
+              const jsonStr = line.slice(6).trim();
+              if (jsonStr) {
+                const data = JSON.parse(jsonStr);
+                if (data.type === 'result') {
+                  finalResult = data.content;
+                  setTranslationState(prev => ({
+                    ...prev,
+                    result: finalResult
+                  }));
+                }
               }
             } catch (parseError) {
-              console.error('Error parsing SSE data:', parseError);
+              // Silently skip malformed final SSE data
             }
           }
         }
@@ -166,7 +216,6 @@ const SrtForm: React.FC = () => {
       }
 
     } catch (error) {
-      console.error('Translation error:', error);
       setTranslationState({
         status: 'error',
         translated: 0,
@@ -178,30 +227,21 @@ const SrtForm: React.FC = () => {
   };
 
   const handleDownload = () => {
-    console.log('Download clicked. Translation state:', translationState);
-    console.log('Has result:', !!translationState.result);
-    console.log('Status:', translationState.status);
-    console.log('Percentage:', translationState.percentage);
-    
     if (!translationState.result || translationState.status !== 'complete') {
-      console.log('Download blocked - missing result or not complete');
       alert('Translation result not available. Please wait for translation to complete.');
       return;
     }
 
-    console.log('Creating download blob...');
     const blob = new Blob([translationState.result], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
     link.download = file ? file.name.replace('.srt', '_translated.srt') : 'translated.srt';
-    console.log('Download filename:', link.download);
     
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
-    console.log('Download triggered successfully');
   };
 
   const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
@@ -300,14 +340,35 @@ const SrtForm: React.FC = () => {
             {apiKey ? "✅" : "👉"} Step 2: Enter your Google Gemini API Key
           </label>
           <div className="md:px-8">
-            <input
-              type="password"
-              id="api-key"
-              value={apiKey}
-              onChange={handleApiKeyChange}
-              placeholder="Enter your Gemini API key..."
-              className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            />
+            <div className="relative">
+              <input
+                type={showApiKey ? "text" : "password"}
+                id="api-key"
+                value={apiKey}
+                onChange={handleApiKeyChange}
+                placeholder="Enter your Gemini API key..."
+                className="w-full px-4 py-3 pr-12 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              />
+              <button
+                type="button"
+                onClick={() => setShowApiKey(!showApiKey)}
+                className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300 transition-colors"
+                aria-label={showApiKey ? "Hide API key" : "Show API key"}
+              >
+                {showApiKey ? (
+                  // Eye slash icon (hide)
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.878 9.878L3 3m6.878 6.878L21 21" />
+                  </svg>
+                ) : (
+                  // Eye icon (show)
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                  </svg>
+                )}
+              </button>
+            </div>
             <p className="text-sm text-gray-500 dark:text-gray-400 mt-2">
               Get your free API key from{' '}
               <a
@@ -350,16 +411,24 @@ const SrtForm: React.FC = () => {
         <div className="md:px-8">
           <button
             type="submit"
-            disabled={!file || !apiKey.trim() || translationState.status === 'translating'}
+            disabled={!file || !apiKey.trim() || translationState.status !== 'idle'}
             className={classNames(
               "w-full py-4 px-6 rounded-lg font-semibold text-lg transition-all duration-200",
-              !file || !apiKey.trim() || translationState.status === 'translating'
+              !file || !apiKey.trim() || translationState.status !== 'idle'
                 ? "bg-gray-300 dark:bg-gray-700 text-gray-500 dark:text-gray-400 cursor-not-allowed"
                 : "bg-blue-500 hover:bg-blue-600 text-white shadow-lg hover:shadow-xl transform hover:-translate-y-0.5"
             )}
           >
             {translationState.status === 'translating' 
               ? '🔄 Translating...' 
+              : translationState.status === 'quota_error'
+              ? '⏰ Quota Exceeded - Retrying...'
+              : translationState.status === 'retry'
+              ? '🔄 Retrying...'
+              : translationState.status === 'error'
+              ? '❌ Error Occurred'
+              : translationState.status === 'complete'
+              ? '✅ Translation Complete'
               : '🚀 Start Translation'
             }
           </button>
@@ -390,6 +459,18 @@ const SrtForm: React.FC = () => {
             className="w-full py-4 px-6 rounded-lg font-semibold text-lg bg-green-500 hover:bg-green-600 text-white shadow-lg hover:shadow-xl transform hover:-translate-y-0.5 transition-all duration-200"
           >
             ⬇️ Download Translated File
+          </button>
+        </div>
+      )}
+
+      {/* Reset Button - Show when translation is complete or has error */}
+      {(translationState.status === 'complete' || translationState.status === 'error') && (
+        <div className="mt-4 md:px-8">
+          <button
+            onClick={resetTranslation}
+            className="w-full py-3 px-6 rounded-lg font-medium text-base bg-gray-500 hover:bg-gray-600 text-white shadow-md hover:shadow-lg transition-all duration-200"
+          >
+            🔄 Start New Translation
           </button>
         </div>
       )}
