@@ -117,41 +117,79 @@ const SrtForm: React.FC = () => {
       }
 
       let finalResult = '';
+      let buffer = ''; // Buffer to accumulate incomplete lines
 
       while (true) {
         const { done, value } = await reader.read();
         
         if (done) break;
 
-        const chunk = decoder.decode(value, { stream: true });
-        const lines = chunk.split('\n');
+        // Decode the chunk and add to buffer
+        buffer += decoder.decode(value, { stream: true });
+        
+        // Split by double newline to get complete SSE messages
+        const messages = buffer.split('\n\n');
+        
+        // Keep the last incomplete message in buffer
+        buffer = messages.pop() || '';
+        
+        // Process complete messages
+        for (const message of messages) {
+          const lines = message.split('\n');
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              try {
+                const jsonStr = line.slice(6).trim();
+                if (jsonStr) { // Only parse non-empty JSON
+                  const data = JSON.parse(jsonStr);
+                  
+                  if (data.type === 'result') {
+                    finalResult = data.content;
+                    // Update the translation state with the final result
+                    setTranslationState(prev => ({
+                      ...prev,
+                      result: finalResult
+                    }));
+                  } else if (data.type && data.translated !== undefined) {
+                    setTranslationState({
+                      status: data.type,
+                      translated: data.translated || 0,
+                      total: data.total || 0,
+                      percentage: data.percentage || 0,
+                      currentChunk: data.currentChunk,
+                      totalChunks: data.totalChunks,
+                      message: data.message || '',
+                      retryAfter: data.retryAfter
+                    });
+                  }
+                }
+              } catch (parseError) {
+                // Silently skip malformed SSE data
+              }
+            }
+          }
+        }
+      }
 
+      // Process any remaining data in buffer
+      if (buffer.trim()) {
+        const lines = buffer.split('\n');
         for (const line of lines) {
           if (line.startsWith('data: ')) {
             try {
-              const data = JSON.parse(line.slice(6));
-              
-              if (data.type === 'result') {
-                finalResult = data.content;
-                // Update the translation state with the final result
-                setTranslationState(prev => ({
-                  ...prev,
-                  result: finalResult
-                }));
-              } else if (data.type && data.translated !== undefined) {
-                setTranslationState({
-                  status: data.type,
-                  translated: data.translated || 0,
-                  total: data.total || 0,
-                  percentage: data.percentage || 0,
-                  currentChunk: data.currentChunk,
-                  totalChunks: data.totalChunks,
-                  message: data.message || '',
-                  retryAfter: data.retryAfter
-                });
+              const jsonStr = line.slice(6).trim();
+              if (jsonStr) {
+                const data = JSON.parse(jsonStr);
+                if (data.type === 'result') {
+                  finalResult = data.content;
+                  setTranslationState(prev => ({
+                    ...prev,
+                    result: finalResult
+                  }));
+                }
               }
             } catch (parseError) {
-              console.error('Error parsing SSE data:', parseError);
+              // Silently skip malformed final SSE data
             }
           }
         }
@@ -166,7 +204,6 @@ const SrtForm: React.FC = () => {
       }
 
     } catch (error) {
-      console.error('Translation error:', error);
       setTranslationState({
         status: 'error',
         translated: 0,
@@ -178,30 +215,21 @@ const SrtForm: React.FC = () => {
   };
 
   const handleDownload = () => {
-    console.log('Download clicked. Translation state:', translationState);
-    console.log('Has result:', !!translationState.result);
-    console.log('Status:', translationState.status);
-    console.log('Percentage:', translationState.percentage);
-    
     if (!translationState.result || translationState.status !== 'complete') {
-      console.log('Download blocked - missing result or not complete');
       alert('Translation result not available. Please wait for translation to complete.');
       return;
     }
 
-    console.log('Creating download blob...');
     const blob = new Blob([translationState.result], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
     link.download = file ? file.name.replace('.srt', '_translated.srt') : 'translated.srt';
-    console.log('Download filename:', link.download);
     
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
-    console.log('Download triggered successfully');
   };
 
   const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
