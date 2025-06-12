@@ -69,14 +69,42 @@ const formatDialogueLines = (text: string): string => {
 
 const isQuotaError = (error: any): boolean => {
 	const errorMessage = error?.message?.toLowerCase() || '';
-	return (
+	const errorString = String(error).toLowerCase();
+	
+	// Debug: log the error to help diagnose quota detection issues
+	console.log('🔍 Error analysis for quota detection:', {
+		status: error?.status,
+		statusCode: error?.statusCode,
+		lastErrorStatus: error?.lastError?.statusCode,
+		message: errorMessage,
+		errorString: errorString,
+		fullError: error
+	});
+	
+	// Check for direct quota indicators in the error
+	const hasQuotaIndicators = (
 		error?.status === 429 ||
+		error?.code === 429 ||
+		error?.statusCode === 429 ||
+		error?.lastError?.statusCode === 429 || // For wrapped RetryErrors
 		errorMessage.includes('quota') ||
 		errorMessage.includes('rate limit') ||
 		errorMessage.includes('resource_exhausted') ||
 		errorMessage.includes('too many requests') ||
-		errorMessage.includes('quota exceeded')
+		errorMessage.includes('quota exceeded') ||
+		errorMessage.includes('requests per minute') ||
+		errorMessage.includes('rpm') ||
+		errorMessage.includes('rate_limit_exceeded') ||
+		errorMessage.includes('429') ||
+		errorString.includes('quota') ||
+		errorString.includes('rate limit') ||
+		errorString.includes('429') ||
+		errorString.includes('resource_exhausted') ||
+		errorString.includes('too many requests')
 	);
+	
+	console.log(`🔍 Quota detection result: ${hasQuotaIndicators}`);
+	return hasQuotaIndicators;
 };
 
 const retrieveTranslationWithQuotaHandling = async (
@@ -84,7 +112,9 @@ const retrieveTranslationWithQuotaHandling = async (
 	language: string, 
 	apiKey: string,
 	maxRetries: number = 3,
-	originalSegments?: any[] // Para re-tentar com chunks menores
+	originalSegments?: any[], // Para re-tentar com chunks menores
+	onQuotaError?: (retryAfter: number) => Promise<void>, // Callback para notificar frontend sobre quota
+	onQuotaRetry?: () => Promise<void> // Callback para notificar frontend sobre retry
 ): Promise<{ result: string; retryAfter?: number }> => {
 	// Validação básica da chave
 	if (apiKey.trim().length < 30) {
@@ -168,14 +198,45 @@ const retrieveTranslationWithQuotaHandling = async (
 			if (isQuotaError(error)) {
 				const retryAfter = 65; // 65 seconds for quota reset
 				
+				console.log(`🚫 Quota error detected on attempt ${attempt + 1}/${maxRetries}`);
+				
 				if (attempt === maxRetries - 1) {
 					// Last attempt, throw quota error to be handled by caller
 					throw new Error('QUOTA_ERROR');
 				}
 				
+				// Notify frontend about quota error if callback provided
+				if (onQuotaError) {
+					await onQuotaError(retryAfter);
+				}
+				
 				// Wait before retrying
+				console.log(`⏳ Waiting ${retryAfter}s for quota reset...`);
 				await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
+				
+				// Notify frontend about retry if callback provided
+				if (onQuotaRetry) {
+					await onQuotaRetry();
+				}
+				
 				continue;
+			}
+			
+			// Additional heuristic: if we get repeated failures on small chunks,
+			// it might be a quota issue that we didn't detect properly
+			if (attempt >= 1 && text.length < 1000) {
+				console.log('🤔 Repeated failure on small chunk - might be quota issue');
+				
+				// Force quota handling after 2 failed attempts on small chunks
+				if (attempt >= 2) {
+					console.log('🔄 Forcing quota handling due to repeated small chunk failures');
+					throw new Error('QUOTA_ERROR');
+				}
+				
+				// Wait a bit longer for potential quota reset
+				const extraDelay = 30000; // 30 seconds extra delay
+				console.log(`⏳ Adding extra ${extraDelay/1000}s delay for potential quota issue...`);
+				await new Promise(resolve => setTimeout(resolve, extraDelay));
 			}
 			
 			// For other errors, retry with exponential backoff
@@ -279,7 +340,9 @@ export async function POST(request: Request) {
 				}
 
 				// Parse SRT content into segments
-				const segments = content.split(/\r\n\r\n|\n\n/).map(parseSegment);
+				const segments = content.split(/\r\n\r\n|\n\n/)
+					.map(parseSegment)
+					.filter(segment => segment.id && segment.timestamp && segment.text.trim()); // Filter out invalid/empty segments
 				const totalSegments = segments.length;
 				
 				if (totalSegments === 0) {
@@ -315,8 +378,36 @@ export async function POST(request: Request) {
 				let currentSegmentIndex = 0;
 
 				// Function to process a group of segments with automatic chunk splitting
-				const processSegmentGroup = async (segmentGroup: any[]): Promise<string[]> => {
+				const processSegmentGroup = async (segmentGroup: any[], chunkIndex?: number): Promise<string[]> => {
 					const chunkText = segmentGroup.map((segment) => segment.text).join("|");
+					
+					// Callbacks to notify frontend about quota issues
+					const onQuotaError = async (retryAfter: number) => {
+						const quotaError: TranslationProgress = {
+							type: 'quota_error',
+							translated: translatedSegments.length,
+							total: totalSegments,
+							percentage: Math.round((translatedSegments.length / totalSegments) * 100),
+							currentChunk: chunkIndex !== undefined ? chunkIndex + 1 : 0,
+							totalChunks,
+							message: `🚫 API quota limit reached! Translation paused. Waiting ${retryAfter}s for quota reset...`,
+							retryAfter
+						};
+						controller.enqueue(encoder.encode(`data: ${JSON.stringify(quotaError)}\n\n`));
+					};
+					
+					const onQuotaRetry = async () => {
+						const retryMessage: TranslationProgress = {
+							type: 'retry',
+							translated: translatedSegments.length,
+							total: totalSegments,
+							percentage: Math.round((translatedSegments.length / totalSegments) * 100),
+							currentChunk: chunkIndex !== undefined ? chunkIndex + 1 : 0,
+							totalChunks,
+							message: `✅ Quota reset successful! Resuming translation...`
+						};
+						controller.enqueue(encoder.encode(`data: ${JSON.stringify(retryMessage)}\n\n`));
+					};
 					
 					try {
 						const { result, retryAfter } = await retrieveTranslationWithQuotaHandling(
@@ -324,7 +415,9 @@ export async function POST(request: Request) {
 							language, 
 							apiKey,
 							3, // maxRetries
-							segmentGroup // Pass original segments for splitting detection
+							segmentGroup, // Pass original segments for splitting detection
+							onQuotaError, // Quota error callback
+							onQuotaRetry  // Quota retry callback
 						);
 						
 						if (retryAfter) {
@@ -333,20 +426,50 @@ export async function POST(request: Request) {
 						
 						const translatedChunks = result.split("|");
 						
-						// Ensure we have complete translation
+						// CRITICAL FIX: Ensure we have complete translation for this chunk
+						// This prevents the content offset bug by guaranteeing each chunk returns the correct number of translations
 						if (translatedChunks.length < segmentGroup.length) {
 							const missing = segmentGroup.length - translatedChunks.length;
+							console.log(`⚠️  Chunk missing ${missing} translations, filling with original text`);
 							
 							// Fill missing segments with original text
 							for (let i = translatedChunks.length; i < segmentGroup.length; i++) {
 								translatedChunks.push(segmentGroup[i].text);
 							}
+						} else if (translatedChunks.length > segmentGroup.length) {
+							// Trim excess translations (shouldn't happen but being defensive)
+							console.log(`⚠️  Chunk has ${translatedChunks.length - segmentGroup.length} excess translations, trimming`);
+							translatedChunks.splice(segmentGroup.length);
+						}
+						
+						// Final validation: ensure exact match
+						if (translatedChunks.length !== segmentGroup.length) {
+							console.error(`🔴 CRITICAL: Chunk length mismatch! Expected ${segmentGroup.length}, got ${translatedChunks.length}`);
+							// Force correct length by padding or trimming
+							while (translatedChunks.length < segmentGroup.length) {
+								translatedChunks.push(segmentGroup[translatedChunks.length].text);
+							}
+							translatedChunks.splice(segmentGroup.length);
 						}
 						
 						return translatedChunks;
 						
 					} catch (error: any) {
 						if (error.message === 'SPLIT_CHUNK_NEEDED') {
+							
+							// Notify about chunk splitting
+							if (chunkIndex !== undefined) {
+								const splitMessage: TranslationProgress = {
+									type: 'progress',
+									translated: translatedSegments.length,
+									total: totalSegments,
+									percentage: Math.round((translatedSegments.length / totalSegments) * 100),
+									currentChunk: chunkIndex + 1,
+									totalChunks,
+									message: `🔄 Chunk ${chunkIndex + 1} too large, splitting into smaller parts (${segmentGroup.length} → ${Math.ceil(segmentGroup.length / 2)} + ${Math.floor(segmentGroup.length / 2)} subtitles)...`
+								};
+								controller.enqueue(encoder.encode(`data: ${JSON.stringify(splitMessage)}\n\n`));
+							}
 							
 							// If only 1 segment, we can't split further - try harder with individual segment
 							if (segmentGroup.length === 1) {
@@ -355,13 +478,19 @@ export async function POST(request: Request) {
 										chunkText, 
 										language, 
 										apiKey,
-										5 // More retries for single segments
+										5, // More retries for single segments
+										undefined, // No original segments for single segment
+										onQuotaError, // Quota error callback
+										onQuotaRetry  // Quota retry callback
 									);
 									const translatedChunks = result.split("|");
+									
+									// CRITICAL FIX: Ensure single segment always returns exactly one translation
 									if (translatedChunks.length === 0 || !translatedChunks[0].trim()) {
 										return [segmentGroup[0].text]; // Return original if translation fails
 									}
-									return translatedChunks;
+									// Return only the first translation for single segment
+									return [translatedChunks[0]];
 								} catch (singleError: any) {
 									return [segmentGroup[0].text];
 								}
@@ -377,7 +506,22 @@ export async function POST(request: Request) {
 								processSegmentGroup(secondHalf)
 							]);
 							
-							return [...firstResult, ...secondResult];
+							const combinedResult = [...firstResult, ...secondResult];
+							
+							// CRITICAL FIX: Validate chunk splitting results
+							if (combinedResult.length !== segmentGroup.length) {
+								console.error(`🔴 CRITICAL: Split chunk result mismatch! Expected ${segmentGroup.length}, got ${combinedResult.length}`);
+								console.error(`  First half: expected ${firstHalf.length}, got ${firstResult.length}`);
+								console.error(`  Second half: expected ${secondHalf.length}, got ${secondResult.length}`);
+								
+								// Force correct length
+								while (combinedResult.length < segmentGroup.length) {
+									combinedResult.push(segmentGroup[combinedResult.length].text);
+								}
+								combinedResult.splice(segmentGroup.length);
+							}
+							
+							return combinedResult;
 						}
 						
 						if (error.message === 'QUOTA_ERROR') {
@@ -394,7 +538,7 @@ export async function POST(request: Request) {
 					const group = groups[chunkIndex];
 					
 					try {
-						const translatedChunks = await processSegmentGroup(group);
+						const translatedChunks = await processSegmentGroup(group, chunkIndex);
 						translatedSegments.push(...translatedChunks);
 						
 						// Update current segment index
@@ -413,9 +557,17 @@ export async function POST(request: Request) {
 						controller.enqueue(encoder.encode(`data: ${JSON.stringify(progress)}\n\n`));
 						
 					} catch (error: any) {
+						console.log(`🔍 DEBUG: Caught error in chunk ${chunkIndex + 1}:`, {
+							message: error?.message,
+							type: typeof error,
+							isQuotaError: isQuotaError(error)
+						});
+						
 						if (error.message === 'QUOTA_ERROR') {
 							// Handle quota error specially
 							const retryAfter = 65;
+							
+							console.log(`🚫 QUOTA ERROR: Handling quota limit at chunk ${chunkIndex + 1}/${totalChunks}`);
 							
 							// Quota hit, inform frontend
 							const quotaError: TranslationProgress = {
@@ -425,12 +577,13 @@ export async function POST(request: Request) {
 								percentage: Math.round((translatedSegments.length / totalSegments) * 100),
 								currentChunk: chunkIndex + 1,
 								totalChunks,
-								message: `Quota limit reached. Retrying in ${retryAfter} seconds...`,
+								message: `🚫 API quota limit reached! Translation paused at chunk ${chunkIndex + 1}/${totalChunks}. Waiting ${retryAfter}s for quota reset...`,
 								retryAfter
 							};
 							controller.enqueue(encoder.encode(`data: ${JSON.stringify(quotaError)}\n\n`));
 							
 							// Wait for quota reset
+							console.log(`⏳ Waiting ${retryAfter}s for quota reset...`);
 							await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
 							
 							// Send retry message
@@ -441,34 +594,139 @@ export async function POST(request: Request) {
 								percentage: Math.round((translatedSegments.length / totalSegments) * 100),
 								currentChunk: chunkIndex + 1,
 								totalChunks,
-								message: 'Quota reset. Resuming translation...'
+								message: `✅ Quota reset successful! Resuming translation from chunk ${chunkIndex + 1}/${totalChunks}...`
 							};
 							controller.enqueue(encoder.encode(`data: ${JSON.stringify(retryMessage)}\n\n`));
 							
 							// Retry the same chunk
-							const retryTranslatedChunks = await processSegmentGroup(group);
+							console.log(`🔄 Retrying chunk ${chunkIndex + 1} after quota reset...`);
+							const retryTranslatedChunks = await processSegmentGroup(group, chunkIndex);
 							translatedSegments.push(...retryTranslatedChunks);
-									// Update current segment index
-						currentSegmentIndex += group.length;
-					} else {
-						const errorData: TranslationProgress = {
-							type: 'error',
-							translated: currentSegmentIndex,
-							total: totalSegments,
-							percentage: Math.round((currentSegmentIndex / totalSegments) * 100),
-							currentChunk: chunkIndex + 1,
-							totalChunks,
-							message: `Error in chunk ${chunkIndex + 1}: ${error.message}`
-						};
-						controller.enqueue(encoder.encode(`data: ${JSON.stringify(errorData)}\n\n`));
-						controller.close();
-							return;
+							
+							// Update current segment index
+							currentSegmentIndex += group.length;
+						} else if (isQuotaError(error)) {
+							// NEW: Handle quota errors detected by isQuotaError function
+							const retryAfter = 65;
+							
+							console.log(`🚫 QUOTA ERROR DETECTED: Handling quota limit at chunk ${chunkIndex + 1}/${totalChunks}`);
+							
+							// Quota hit, inform frontend
+							const quotaError: TranslationProgress = {
+								type: 'quota_error',
+								translated: translatedSegments.length,
+								total: totalSegments,
+								percentage: Math.round((translatedSegments.length / totalSegments) * 100),
+								currentChunk: chunkIndex + 1,
+								totalChunks,
+								message: `🚫 API quota limit reached! Translation paused at chunk ${chunkIndex + 1}/${totalChunks}. Waiting ${retryAfter}s for quota reset...`,
+								retryAfter
+							};
+							controller.enqueue(encoder.encode(`data: ${JSON.stringify(quotaError)}\n\n`));
+							
+							// Wait for quota reset
+							console.log(`⏳ Waiting ${retryAfter}s for quota reset...`);
+							await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
+							
+							// Send retry message
+							const retryMessage: TranslationProgress = {
+								type: 'retry',
+								translated: translatedSegments.length,
+								total: totalSegments,
+								percentage: Math.round((translatedSegments.length / totalSegments) * 100),
+								currentChunk: chunkIndex + 1,
+								totalChunks,
+								message: `✅ Quota reset successful! Resuming translation from chunk ${chunkIndex + 1}/${totalChunks}...`
+							};
+							controller.enqueue(encoder.encode(`data: ${JSON.stringify(retryMessage)}\n\n`));
+							
+							// Retry the same chunk
+							console.log(`🔄 Retrying chunk ${chunkIndex + 1} after quota reset...`);
+							const retryTranslatedChunks = await processSegmentGroup(group, chunkIndex);
+							translatedSegments.push(...retryTranslatedChunks);
+							
+							// Update current segment index
+							currentSegmentIndex += group.length;
+						} else {
+							// For any other error, also check if it might be quota-related
+							const errorMsg = error?.message?.toLowerCase() || '';
+							const isLikelyQuota = errorMsg.includes('429') || 
+												errorMsg.includes('rate') || 
+												errorMsg.includes('limit') ||
+												errorMsg.includes('too many') ||
+												errorMsg.includes('resource');
+							
+							if (isLikelyQuota && chunkIndex > 0) {
+								// If we're past the first chunk and getting errors that look like quota issues,
+								// treat it as quota error
+								console.log(`🔍 Detected likely quota error: ${error.message}`);
+								
+								const retryAfter = 65;
+								const quotaError: TranslationProgress = {
+									type: 'quota_error',
+									translated: translatedSegments.length,
+									total: totalSegments,
+									percentage: Math.round((translatedSegments.length / totalSegments) * 100),
+									currentChunk: chunkIndex + 1,
+									totalChunks,
+									message: `🚫 Possible quota limit detected! Translation paused at chunk ${chunkIndex + 1}/${totalChunks}. Waiting ${retryAfter}s...`,
+									retryAfter
+								};
+								controller.enqueue(encoder.encode(`data: ${JSON.stringify(quotaError)}\n\n`));
+								
+								// Wait and retry
+								await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
+								
+								const retryMessage: TranslationProgress = {
+									type: 'retry',
+									translated: translatedSegments.length,
+									total: totalSegments,
+									percentage: Math.round((translatedSegments.length / totalSegments) * 100),
+									currentChunk: chunkIndex + 1,
+									totalChunks,
+									message: `✅ Resuming translation from chunk ${chunkIndex + 1}/${totalChunks}...`
+								};
+								controller.enqueue(encoder.encode(`data: ${JSON.stringify(retryMessage)}\n\n`));
+								
+								const retryTranslatedChunks = await processSegmentGroup(group, chunkIndex);
+								translatedSegments.push(...retryTranslatedChunks);
+								currentSegmentIndex += group.length;
+							} else {
+								// Regular error handling
+								const errorData: TranslationProgress = {
+									type: 'error',
+									translated: currentSegmentIndex,
+									total: totalSegments,
+									percentage: Math.round((currentSegmentIndex / totalSegments) * 100),
+									currentChunk: chunkIndex + 1,
+									totalChunks,
+									message: `Error in chunk ${chunkIndex + 1}: ${error.message}`
+								};
+								controller.enqueue(encoder.encode(`data: ${JSON.stringify(errorData)}\n\n`));
+								controller.close();
+								return;
+							}
 						}
 					}
 				}
 
 				// Build final SRT content
 				let finalSRT = '';
+				
+				// CRITICAL FIX: Ensure translatedSegments array has the same length as segments array
+				// This prevents the content offset bug where translations appear in wrong positions
+				while (translatedSegments.length < segments.length) {
+					const missingIndex = translatedSegments.length;
+					console.log(`⚠️  Missing translation for segment ${missingIndex + 1}, using original text`);
+					translatedSegments.push(segments[missingIndex].text);
+				}
+				
+				// Double-check array lengths match
+				if (translatedSegments.length !== segments.length) {
+					console.error(`🔴 CRITICAL ERROR: Array length mismatch! segments: ${segments.length}, translatedSegments: ${translatedSegments.length}`);
+					// Trim excess translations if somehow we have more
+					translatedSegments = translatedSegments.slice(0, segments.length);
+				}
 				
 				for (let i = 0; i < segments.length; i++) {
 					const originalSegment = segments[i];
@@ -477,7 +735,14 @@ export async function POST(request: Request) {
 					// Formatar corretamente as linhas de diálogo
 					const formattedText = formatDialogueLines(translatedText);
 					
-					finalSRT += `${i + 1}\n${originalSegment.timestamp}\n${formattedText.trim()}\n\n`;
+					// Add segment with proper spacing, but don't add extra line breaks at the end
+					if (i === segments.length - 1) {
+						// Last segment - don't add extra line breaks
+						finalSRT += `${i + 1}\n${originalSegment.timestamp}\n${formattedText.trim()}\n`;
+					} else {
+						// Regular segment - add double line break for separation
+						finalSRT += `${i + 1}\n${originalSegment.timestamp}\n${formattedText.trim()}\n\n`;
+					}
 				}
 
 				// Send completion

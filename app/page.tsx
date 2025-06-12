@@ -75,6 +75,21 @@ playfair.className
 					</div>
 				</div>
 			</div>
+
+			{/* Developer Credit */}
+			<div className="text-center mt-8 py-6 border-t border-gray-200 dark:border-gray-700">
+				<p className="text-sm text-gray-500 dark:text-gray-400">
+					Developed by{' '}
+					<a 
+						href="https://www.linkedin.com/in/tiago-henrique-pavaneli/"
+						target="_blank"
+						rel="noopener noreferrer"
+						className="font-semibold text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 transition-colors"
+					>
+						Tiago Henrique Pavaneli
+					</a>
+				</p>
+			</div>
 		</div>
 	);
 }
