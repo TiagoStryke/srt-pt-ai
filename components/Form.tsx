@@ -236,7 +236,7 @@ const SrtForm: React.FC = () => {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = file ? file.name.replace('.srt', '_translated.srt') : 'translated.srt';
+    link.download = file ? file.name.replace('.srt', '.pt.srt') : 'translated.pt.srt';
     
     document.body.appendChild(link);
     link.click();
@@ -378,6 +378,15 @@ const SrtForm: React.FC = () => {
                 className="text-blue-500 hover:text-blue-600 underline"
               >
                 Google AI Studio
+              </a>
+              {' • '}
+              <a
+                href="https://aistudio.google.com/usage"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-blue-500 hover:text-blue-600 underline"
+              >
+                Check API usage
               </a>
             </p>
           </div>

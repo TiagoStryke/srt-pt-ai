@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect, useState } from 'react';
 
 interface DebugConsoleProps {
   translated: number;
@@ -22,6 +23,27 @@ export default function DebugConsole({
   status,
   retryAfter
 }: DebugConsoleProps) {
+  const [timeLeft, setTimeLeft] = useState<number>(retryAfter || 0);
+  const [showTooltip, setShowTooltip] = useState(false);
+
+  // Countdown timer for quota retry
+  useEffect(() => {
+    if (status === 'quota_error' && retryAfter) {
+      setTimeLeft(retryAfter);
+      const interval = setInterval(() => {
+        setTimeLeft(prev => {
+          if (prev <= 1) {
+            clearInterval(interval);
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+
+      return () => clearInterval(interval);
+    }
+  }, [status, retryAfter]);
+
   const getStatusColor = () => {
     switch (status) {
       case 'translating': return 'text-blue-600';
@@ -54,6 +76,14 @@ export default function DebugConsole({
     }
   };
 
+  const getStatusText = () => {
+    switch (status) {
+      case 'quota_error': return 'QUOTA LIMIT - WAITING';
+      case 'retry': return 'RESUMING TRANSLATION';
+      default: return status.toUpperCase().replace('_', ' ');
+    }
+  };
+
   return (
     <div className="bg-gray-900 text-gray-100 p-6 rounded-lg font-mono text-sm">
       <div className="border-b border-gray-700 pb-4 mb-4">
@@ -61,8 +91,40 @@ export default function DebugConsole({
         <div className="flex items-center gap-2">
           <span className="text-2xl">{getStatusIcon()}</span>
           <span className={`font-semibold ${getStatusColor()}`}>
-            {status.toUpperCase().replace('_', ' ')}
+            {getStatusText()}
           </span>
+          {status === 'quota_error' && (
+            <div className="relative">
+              <button
+                onMouseEnter={() => setShowTooltip(true)}
+                onMouseLeave={() => setShowTooltip(false)}
+                className="ml-2 text-yellow-400 hover:text-yellow-300 transition-colors"
+              >
+                ℹ️
+              </button>
+              {showTooltip && (
+                <div className="absolute left-6 top-0 z-10 w-72 p-3 bg-gray-800 border border-yellow-600 rounded-lg shadow-lg text-xs">
+                  <div className="text-yellow-300 font-semibold mb-1">💡 Pro Tip</div>
+                  <div className="text-gray-200 mb-2">
+                    Free Gemini API has a limit of 10 requests/minute. 
+                    With a paid API key, there's no wait time!
+                  </div>
+                  <div className="text-blue-300 text-xs">
+                    📊{' '}
+                    <a 
+                      href="https://aistudio.google.com/usage" 
+                      target="_blank" 
+                      rel="noopener noreferrer"
+                      className="underline hover:text-blue-200"
+                    >
+                      Check API usage
+                    </a>
+                  </div>
+                  <div className="absolute -left-2 top-2 w-0 h-0 border-t-4 border-r-4 border-t-transparent border-r-yellow-600 border-b-4 border-b-transparent"></div>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
@@ -100,28 +162,55 @@ export default function DebugConsole({
           )}
         </div>
 
-        {/* Quota Warning */}
-        {status === 'quota_error' && retryAfter && (
-          <div className="bg-yellow-900/30 border border-yellow-600 rounded p-4">
-            <div className="flex items-center gap-2 mb-2">
+        {/* Quota Warning with Countdown */}
+        {status === 'quota_error' && (
+          <div className="bg-yellow-900/30 border border-yellow-600 rounded-lg p-4 animate-pulse">
+            <div className="flex items-center gap-2 mb-3">
               <span className="text-yellow-400 text-lg">⚠️</span>
-              <div className="text-yellow-300 font-semibold">QUOTA LIMIT HIT</div>
+              <div className="text-yellow-300 font-semibold">API QUOTA LIMIT REACHED</div>
             </div>
-            <div className="text-yellow-200 text-sm">
-              API rate limit reached. Auto-retrying in {retryAfter} seconds...
+            <div className="space-y-2">
+              <div className="text-yellow-200 text-sm">
+                Free Gemini API allows only 10 requests per minute.
+              </div>
+              <div className="bg-yellow-800/40 rounded p-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-yellow-100 text-sm font-medium">Resuming in:</span>
+                  <span className="text-yellow-300 font-bold text-lg">
+                    {Math.floor(timeLeft / 60)}:{(timeLeft % 60).toString().padStart(2, '0')}
+                  </span>
+                </div>
+                <div className="w-full bg-yellow-800 rounded-full h-1 mt-2">
+                  <div 
+                    className="h-1 bg-yellow-400 rounded-full transition-all duration-1000"
+                    style={{ width: `${Math.max(0, 100 - (timeLeft / (retryAfter || 65)) * 100)}%` }}
+                  />
+                </div>
+              </div>
+              <div className="text-yellow-300 text-xs">
+                💡 With a paid API, there are no limits and translation wouldn't be interrupted
+              </div>
             </div>
           </div>
         )}
 
         {/* Retry Status */}
         {status === 'retry' && (
-          <div className="bg-orange-900/30 border border-orange-600 rounded p-4">
+          <div className="bg-orange-900/30 border border-orange-600 rounded-lg p-4">
             <div className="flex items-center gap-2 mb-2">
-              <span className="text-orange-400 text-lg">🔄</span>
-              <div className="text-orange-300 font-semibold">RESUMING</div>
+              <span className="text-orange-400 text-lg animate-spin">🔄</span>
+              <div className="text-orange-300 font-semibold">RESUMING TRANSLATION</div>
             </div>
             <div className="text-orange-200 text-sm">
               Quota limit reset. Continuing translation...
+            </div>
+            <div className="mt-2 flex items-center gap-2">
+              <div className="flex space-x-1">
+                <div className="w-2 h-2 bg-orange-400 rounded-full animate-bounce"></div>
+                <div className="w-2 h-2 bg-orange-400 rounded-full animate-bounce" style={{animationDelay: '0.1s'}}></div>
+                <div className="w-2 h-2 bg-orange-400 rounded-full animate-bounce" style={{animationDelay: '0.2s'}}></div>
+              </div>
+              <span className="text-orange-300 text-xs">Processing next chunk...</span>
             </div>
           </div>
         )}

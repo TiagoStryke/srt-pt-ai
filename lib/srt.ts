@@ -62,12 +62,7 @@ export function parseStreamedResponse(response: any): ReadableStream {
 				}
 
 				try {
-					// Log the raw data received from OpenAI
-					console.log("Raw data received:", data);
-
 					const json = JSON.parse(data);
-					console.log("Parsed JSON:", json); // Log parsed JSON
-
 					const text = json.choices[0]?.delta?.content;
 					if (!text) return;
 					buffer += text;
@@ -81,7 +76,6 @@ export function parseStreamedResponse(response: any): ReadableStream {
 						buffer = segments[segments.length - 1]; // Keep the remaining text
 					}
 				} catch (e) {
-					console.error("Error parsing response:", e); // Log errors during parsing
 					controller.error(e);
 				}
 			};
@@ -90,13 +84,11 @@ export function parseStreamedResponse(response: any): ReadableStream {
 
 			for await (const chunk of response.body as any) {
 				const decodedChunk = decoder.decode(chunk);
-				console.log("Raw chunk received:", decodedChunk); // Log each raw chunk received
 				parser.feed(decodedChunk); // Feed the chunk into the parser
 			}
 
 			// Process any remaining buffer content
 			if (buffer.length > 0) {
-				console.log("Final buffer content:", buffer); // Log any final buffer content
 				controller.enqueue(encoder.encode(buffer));
 			}
 
