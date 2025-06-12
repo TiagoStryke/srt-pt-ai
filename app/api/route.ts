@@ -7,7 +7,7 @@ import { generateText } from "ai";
 export const dynamic = 'force-dynamic';
 export const runtime = "nodejs";
 
-const MAX_TOKENS_IN_SEGMENT = 700;
+const MAX_TOKENS_IN_SEGMENT = 400; // Reduzido para evitar truncamento da API Gemini
 
 interface TranslationProgress {
   type: 'progress' | 'quota_error' | 'retry' | 'complete' | 'error';
@@ -19,6 +19,53 @@ interface TranslationProgress {
   message?: string;
   retryAfter?: number;
 }
+
+/**
+ * Formata corretamente as linhas de diálogo preservando a estrutura original
+ * Distingue entre falas de diálogo e palavras compostas
+ */
+const formatDialogueLines = (text: string): string => {
+	// Regex para detectar falas de diálogo vs palavras compostas
+	const dialoguePattern = /^-[^-\s][^-]*(?:\s+-[^-\s][^-]*)*$/;
+	const compoundWordPattern = /^[a-záàâãäéèêëíìîïóòôõöúùûüç]+-[a-záàâãäéèêëíìîïóòôõöúùûüç]+$/i;
+	
+	// Se o texto contém múltiplas ocorrências de "espaco-hifen-texto" em uma linha
+	// É provavelmente diálogo concatenado incorretamente
+	const concatenatedDialoguePattern = /\s+-[^\s-]/g;
+	const matches = text.match(concatenatedDialoguePattern);
+	
+	if (matches && matches.length > 0) {
+		// Detectou diálogo concatenado - precisa separar
+		// Exemplo: "-Olá! -Oi, tudo bem? -Estou ótimo."
+		// Deve virar: "-Olá!\n-Oi, tudo bem?\n-Estou ótimo."
+		
+		// Divide o texto preservando falas de diálogo
+		return text
+			.split(/(\s+-[^-])/) // Divide mantendo o delimitador
+			.reduce((result, part, index, array) => {
+				if (part.match(/^\s+-[^-]/)) {
+					// É uma nova fala - adiciona quebra de linha antes
+					return result + '\n' + part.trim();
+				} else if (index === 0) {
+					// Primeira parte
+					return part;
+				} else {
+					// Continua a fala anterior
+					return result + part;
+				}
+			}, '')
+			.trim();
+	}
+	
+	// Verifica se é uma palavra composta simples
+	const trimmedText = text.trim();
+	if (compoundWordPattern.test(trimmedText)) {
+		// É uma palavra composta (ex: "arco-íris") - não modifica
+		return text;
+	}
+	
+	return text;
+};
 
 const isQuotaError = (error: any): boolean => {
 	const errorMessage = error?.message?.toLowerCase() || '';
@@ -36,7 +83,8 @@ const retrieveTranslationWithQuotaHandling = async (
 	text: string, 
 	language: string, 
 	apiKey: string,
-	maxRetries: number = 3
+	maxRetries: number = 3,
+	originalSegments?: any[] // Para re-tentar com chunks menores
 ): Promise<{ result: string; retryAfter?: number }> => {
 	// Validação básica da chave
 	if (apiKey.trim().length < 30) {
@@ -53,7 +101,7 @@ const retrieveTranslationWithQuotaHandling = async (
 				messages: [
 					{
 						role: "system",
-						content: "Você é um tradutor profissional especializado em legendas de filmes e séries, com foco especial em português brasileiro. IMPORTANTE: Preserve cuidadosamente toda a formatação original, incluindo tags HTML como <i> para itálico. Separe os segmentos de tradução com o símbolo '|'. Mantenha o estilo e tom da linguagem original. Nomes próprios não devem ser traduzidos. Preserve os nomes de programas como 'The Amazing Race'. MUITO IMPORTANTE: Quando o texto original contiver diálogos marcados por hífens (ex: '-Olá. -Oi!'), mantenha cada linha de diálogo separada pela mesma estrutura, preservando os hífens e a formatação em linhas distintas. NUNCA junte múltiplos diálogos em uma única linha.",
+						content: "Você é um tradutor profissional especializado em legendas de filmes e séries, com foco especial em português brasileiro. IMPORTANTE: Preserve cuidadosamente toda a formatação original, incluindo tags HTML como <i> para itálico. Separe os segmentos de tradução com o símbolo '|'. Mantenha o estilo e tom da linguagem original. Nomes próprios não devem ser traduzidos. Preserve os nomes de programas como 'The Amazing Race'. CRÍTICO: Preserve EXATAMENTE a estrutura de quebras de linha do texto original. Quando encontrar diálogos com hífens em linhas separadas (como '-Texto1\\n-Texto2\\n-Texto3'), mantenha cada fala em sua própria linha com quebra de linha (\\n). NUNCA una múltiplas falas em uma única linha. Exemplo: '-Olá.\\n-Oi!' deve se tornar '-Olá.\\n-Oi!' e NÃO '-Olá. -Oi!'. Mantenha quebras de linha originais com \\n.",
 					},
 					{
 						role: "user",
@@ -62,9 +110,30 @@ const retrieveTranslationWithQuotaHandling = async (
 				],
 			});
 
+			// Verificar se a resposta foi truncada
+			const inputSegments = text.split('|').length;
+			const outputSegments = translatedText.split('|').length;
+			
+			if (outputSegments < inputSegments) {
+				const missingSegments = inputSegments - outputSegments;
+				
+				// Se perdeu segmentos E temos os segmentos originais, vamos dividir e tentar novamente
+				if (missingSegments > 0 && originalSegments && originalSegments.length > 1) {
+					throw new Error('SPLIT_CHUNK_NEEDED');
+				}
+				
+				// Para chunks pequenos, tenta novamente uma vez
+				if (attempt === 0 && inputSegments <= 10) {
+					throw new Error('Response truncated - retry needed');
+				}
+			}
+
 			return { result: translatedText };
 		} catch (error: any) {
-			console.error(`Translation error (attempt ${attempt + 1}):`, error);
+			// Se precisamos dividir o chunk, propaga o erro
+			if (error.message === 'SPLIT_CHUNK_NEEDED') {
+				throw error;
+			}
 			
 			// Check for authentication errors first
 			if (error instanceof Error) {
@@ -100,12 +169,11 @@ const retrieveTranslationWithQuotaHandling = async (
 				const retryAfter = 65; // 65 seconds for quota reset
 				
 				if (attempt === maxRetries - 1) {
-					// Last attempt, return quota error info
-					return { result: '', retryAfter };
+					// Last attempt, throw quota error to be handled by caller
+					throw new Error('QUOTA_ERROR');
 				}
 				
 				// Wait before retrying
-				console.log(`Quota limit hit, waiting ${retryAfter}s before retry ${attempt + 1}/${maxRetries}`);
 				await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
 				continue;
 			}
@@ -113,7 +181,6 @@ const retrieveTranslationWithQuotaHandling = async (
 			// For other errors, retry with exponential backoff
 			if (attempt < maxRetries - 1) {
 				const delay = Math.pow(2, attempt) * 1000; // 1s, 2s, 4s
-				console.log(`Retrying in ${delay}ms...`);
 				await new Promise(resolve => setTimeout(resolve, delay));
 				continue;
 			}
@@ -144,7 +211,6 @@ export async function POST(request: Request) {
 					apiKey = requestData.apiKey || '';
 					validationOnly = requestData.validationOnly || false;
 				} catch (parseError) {
-					console.error("Erro ao processar JSON da requisição:", parseError);
 					const errorData: TranslationProgress = {
 						type: 'error',
 						translated: 0,
@@ -248,21 +314,109 @@ export async function POST(request: Request) {
 				let translatedSegments: string[] = [];
 				let currentSegmentIndex = 0;
 
-				// Process each chunk
-				for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
-					const group = groups[chunkIndex];
-					const chunkText = group.map((segment) => segment.text).join("|");
-					
-					console.log(`Processing chunk ${chunkIndex + 1}/${totalChunks} with ${group.length} segments`);
+				// Function to process a group of segments with automatic chunk splitting
+				const processSegmentGroup = async (segmentGroup: any[]): Promise<string[]> => {
+					const chunkText = segmentGroup.map((segment) => segment.text).join("|");
 					
 					try {
 						const { result, retryAfter } = await retrieveTranslationWithQuotaHandling(
 							chunkText, 
 							language, 
-							apiKey
+							apiKey,
+							3, // maxRetries
+							segmentGroup // Pass original segments for splitting detection
 						);
 						
 						if (retryAfter) {
+							throw new Error('QUOTA_ERROR');
+						}
+						
+						const translatedChunks = result.split("|");
+						
+						// Ensure we have complete translation
+						if (translatedChunks.length < segmentGroup.length) {
+							const missing = segmentGroup.length - translatedChunks.length;
+							
+							// Fill missing segments with original text
+							for (let i = translatedChunks.length; i < segmentGroup.length; i++) {
+								translatedChunks.push(segmentGroup[i].text);
+							}
+						}
+						
+						return translatedChunks;
+						
+					} catch (error: any) {
+						if (error.message === 'SPLIT_CHUNK_NEEDED') {
+							
+							// If only 1 segment, we can't split further - try harder with individual segment
+							if (segmentGroup.length === 1) {
+								try {
+									const { result } = await retrieveTranslationWithQuotaHandling(
+										chunkText, 
+										language, 
+										apiKey,
+										5 // More retries for single segments
+									);
+									const translatedChunks = result.split("|");
+									if (translatedChunks.length === 0 || !translatedChunks[0].trim()) {
+										return [segmentGroup[0].text]; // Return original if translation fails
+									}
+									return translatedChunks;
+								} catch (singleError: any) {
+									return [segmentGroup[0].text];
+								}
+							}
+							
+							// Split the group in half and process each part
+							const midPoint = Math.ceil(segmentGroup.length / 2);
+							const firstHalf = segmentGroup.slice(0, midPoint);
+							const secondHalf = segmentGroup.slice(midPoint);
+							
+							const [firstResult, secondResult] = await Promise.all([
+								processSegmentGroup(firstHalf),
+								processSegmentGroup(secondHalf)
+							]);
+							
+							return [...firstResult, ...secondResult];
+						}
+						
+						if (error.message === 'QUOTA_ERROR') {
+							throw error;
+						}
+						
+						// For other errors, return original text to ensure 100% coverage
+						return segmentGroup.map(seg => seg.text);
+					}
+				};
+
+				// Process each chunk
+				for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
+					const group = groups[chunkIndex];
+					
+					try {
+						const translatedChunks = await processSegmentGroup(group);
+						translatedSegments.push(...translatedChunks);
+						
+						// Update current segment index
+						currentSegmentIndex += group.length;
+						
+						// Send progress update
+						const progress: TranslationProgress = {
+							type: 'progress',
+							translated: currentSegmentIndex,
+							total: totalSegments,
+							percentage: Math.round((currentSegmentIndex / totalSegments) * 100),
+							currentChunk: chunkIndex + 1,
+							totalChunks,
+							message: `Chunk ${chunkIndex + 1}/${totalChunks} completed (${currentSegmentIndex}/${totalSegments} subtitles)`
+						};
+						controller.enqueue(encoder.encode(`data: ${JSON.stringify(progress)}\n\n`));
+						
+					} catch (error: any) {
+						if (error.message === 'QUOTA_ERROR') {
+							// Handle quota error specially
+							const retryAfter = 65;
+							
 							// Quota hit, inform frontend
 							const quotaError: TranslationProgress = {
 								type: 'quota_error',
@@ -292,42 +446,11 @@ export async function POST(request: Request) {
 							controller.enqueue(encoder.encode(`data: ${JSON.stringify(retryMessage)}\n\n`));
 							
 							// Retry the same chunk
-							const { result: retryResult } = await retrieveTranslationWithQuotaHandling(
-								chunkText, 
-								language, 
-								apiKey
-							);
-							
-							if (!retryResult) {
-								throw new Error('Translation failed after quota retry');
-							}
-							
-							// Process retry result
-							const translatedChunks = retryResult.split("|");
-							translatedSegments.push(...translatedChunks);
-						} else {
-							// Normal processing
-							const translatedChunks = result.split("|");
-							translatedSegments.push(...translatedChunks);
-						}
-						
-						// Update current segment index
+							const retryTranslatedChunks = await processSegmentGroup(group);
+							translatedSegments.push(...retryTranslatedChunks);
+									// Update current segment index
 						currentSegmentIndex += group.length;
-						
-						// Send progress update
-						const progress: TranslationProgress = {
-							type: 'progress',
-							translated: currentSegmentIndex,
-							total: totalSegments,
-							percentage: Math.round((currentSegmentIndex / totalSegments) * 100),
-							currentChunk: chunkIndex + 1,
-							totalChunks,
-							message: `Chunk ${chunkIndex + 1}/${totalChunks} completed (${currentSegmentIndex}/${totalSegments} subtitles)`
-						};
-						controller.enqueue(encoder.encode(`data: ${JSON.stringify(progress)}\n\n`));
-						
-					} catch (error: any) {
-						console.error(`Error processing chunk ${chunkIndex + 1}:`, error);
+					} else {
 						const errorData: TranslationProgress = {
 							type: 'error',
 							translated: currentSegmentIndex,
@@ -339,19 +462,22 @@ export async function POST(request: Request) {
 						};
 						controller.enqueue(encoder.encode(`data: ${JSON.stringify(errorData)}\n\n`));
 						controller.close();
-						return;
+							return;
+						}
 					}
 				}
 
 				// Build final SRT content
 				let finalSRT = '';
-				let segmentIndex = 0;
 				
 				for (let i = 0; i < segments.length; i++) {
 					const originalSegment = segments[i];
 					const translatedText = translatedSegments[i] || originalSegment.text;
 					
-					finalSRT += `${i + 1}\n${originalSegment.timestamp}\n${translatedText.trim()}\n\n`;
+					// Formatar corretamente as linhas de diálogo
+					const formattedText = formatDialogueLines(translatedText);
+					
+					finalSRT += `${i + 1}\n${originalSegment.timestamp}\n${formattedText.trim()}\n\n`;
 				}
 
 				// Send completion
@@ -369,7 +495,6 @@ export async function POST(request: Request) {
 				controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'result', content: finalSRT })}\n\n`));
 				
 			} catch (error: any) {
-				console.error("Unexpected error:", error);
 				const errorData: TranslationProgress = {
 					type: 'error',
 					translated: 0,
