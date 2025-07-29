@@ -113,7 +113,8 @@ const SrtForm: React.FC = () => {
         body: JSON.stringify({
           content,
           language,
-          apiKey
+          apiKey,
+          filename: file.name // Adicionar o nome do arquivo
         })
       });
 

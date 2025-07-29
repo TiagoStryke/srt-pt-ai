@@ -67,6 +67,101 @@ const formatDialogueLines = (text: string): string => {
 	return text;
 };
 
+/**
+ * Extrai informações contextuais do nome do arquivo para melhorar a tradução
+ */
+const extractFileContext = (filename: string): string => {
+	if (!filename) return '';
+	
+	// Remove extensão e limpa o nome
+	const cleanName = filename.replace(/\.(srt|vtt|ass|ssa)$/i, '').toLowerCase();
+	
+	let context = '';
+	
+	// Detectar série/episódio - múltiplos padrões
+	const seriesPatterns = [
+		/(.+?)\.s(\d+)e(\d+)/i,  // serie.s01e01
+		/(.+?)\.season\.?(\d+)\.episode\.?(\d+)/i,  // serie.season.1.episode.1
+		/(.+?)\.(\d+)x(\d+)/i,   // serie.1x01
+		/(.+?)\s+s(\d+)e(\d+)/i, // serie s01e01 (com espaço)
+		/(.+?)-s(\d+)e(\d+)/i    // serie-s01e01 (com hífen)
+	];
+	
+	let seriesMatch = null;
+	for (const pattern of seriesPatterns) {
+		seriesMatch = cleanName.match(pattern);
+		if (seriesMatch) break;
+	}
+	
+	if (seriesMatch) {
+		const seriesName = seriesMatch[1]
+			.replace(/[\.\-_]/g, ' ')
+			.replace(/\s+/g, ' ')
+			.trim()
+			.split(' ')
+			.map(word => word.charAt(0).toUpperCase() + word.slice(1))
+			.join(' ');
+		const season = parseInt(seriesMatch[2]);
+		const episode = parseInt(seriesMatch[3]);
+		context = `Esta é uma legenda da série "${seriesName}", temporada ${season}, episódio ${episode}.`;
+	} else {
+		// Detectar filme
+		const moviePatterns = [
+			/(.+?)\.(\d{4})/i,       // filme.2023
+			/(.+?)\s+(\d{4})/i,      // filme 2023
+			/(.+?)-(\d{4})/i         // filme-2023
+		];
+		
+		let movieMatch = null;
+		for (const pattern of moviePatterns) {
+			movieMatch = cleanName.match(pattern);
+			if (movieMatch) break;
+		}
+		
+		if (movieMatch) {
+			const movieName = movieMatch[1]
+				.replace(/[\.\-_]/g, ' ')
+				.replace(/\s+/g, ' ')
+				.trim()
+				.split(' ')
+				.map(word => word.charAt(0).toUpperCase() + word.slice(1))
+				.join(' ');
+			const year = movieMatch[2];
+			context = `Esta é uma legenda do filme "${movieName}" (${year}).`;
+		} else {
+			// Tentar extrair apenas o nome sem ano
+			const nameMatch = cleanName.match(/^([^.]+(?:\.[^.]*){0,3})/);
+			if (nameMatch) {
+				const name = nameMatch[1]
+					.replace(/[\.\-_]/g, ' ')
+					.replace(/\s+/g, ' ')
+					.trim()
+					.split(' ')
+					.map(word => word.charAt(0).toUpperCase() + word.slice(1))
+					.join(' ');
+				context = `Esta é uma legenda de "${name}".`;
+			}
+		}
+	}
+	
+	// Detectar qualidade/fonte adicional
+	const qualityInfo = [];
+	if (cleanName.includes('1080p')) qualityInfo.push('alta definição (1080p)');
+	else if (cleanName.includes('720p')) qualityInfo.push('HD (720p)');
+	else if (cleanName.includes('4k') || cleanName.includes('2160p')) qualityInfo.push('4K/Ultra HD');
+	
+	if (cleanName.includes('bluray') || cleanName.includes('blu-ray')) qualityInfo.push('Blu-ray');
+	else if (cleanName.includes('dvd')) qualityInfo.push('DVD');
+	else if (cleanName.includes('webrip') || cleanName.includes('web-dl')) qualityInfo.push('streaming/web');
+	else if (cleanName.includes('hdtv')) qualityInfo.push('TV');
+	
+	if (qualityInfo.length > 0) {
+		context += ` Fonte: ${qualityInfo.join(', ')}.`;
+	}
+	
+	return context;
+};
+
 const isQuotaError = (error: any): boolean => {
 	const errorMessage = error?.message?.toLowerCase() || '';
 	const errorString = String(error).toLowerCase();
@@ -103,7 +198,8 @@ const retrieveTranslationWithQuotaHandling = async (
 	maxRetries: number = 3,
 	originalSegments?: any[], // Para re-tentar com chunks menores
 	onQuotaError?: (retryAfter: number) => Promise<void>, // Callback para notificar frontend sobre quota
-	onQuotaRetry?: () => Promise<void> // Callback para notificar frontend sobre retry
+	onQuotaRetry?: () => Promise<void>, // Callback para notificar frontend sobre retry
+	fileContext?: string // Contexto extraído do nome do arquivo
 ): Promise<{ result: string; retryAfter?: number }> => {
 	// Validação básica da chave
 	if (apiKey.trim().length < 30) {
@@ -115,12 +211,20 @@ const retrieveTranslationWithQuotaHandling = async (
 	
 	for (let attempt = 0; attempt < maxRetries; attempt++) {
 		try {
+			// Construir o prompt do sistema com contexto do arquivo
+			let systemPrompt = "Você é um tradutor profissional especializado em legendas de filmes e séries, com foco especial em português brasileiro. IMPORTANTE: Preserve cuidadosamente toda a formatação original, incluindo tags HTML como <i> para itálico. Separe os segmentos de tradução com o símbolo '|'. Mantenha o estilo e tom da linguagem original. Nomes próprios não devem ser traduzidos. Preserve os nomes de programas como 'The Amazing Race'. CRÍTICO: Preserve EXATAMENTE a estrutura de quebras de linha do texto original. Quando encontrar diálogos com hífens em linhas separadas (como '-Texto1\\n-Texto2\\n-Texto3'), mantenha cada fala em sua própria linha com quebra de linha (\\n). NUNCA una múltiplas falas em uma única linha. Exemplo: '-Olá.\\n-Oi!' deve se tornar '-Olá.\\n-Oi!' e NÃO '-Olá. -Oi!'. Mantenha quebras de linha originais com \\n.";
+			
+			// Adicionar contexto do arquivo se disponível
+			if (fileContext) {
+				systemPrompt += `\n\nCONTEXTO: ${fileContext} Use este contexto para melhorar a qualidade da tradução, adaptando o vocabulário, estilo e tom apropriados para o conteúdo específico.`;
+			}
+			
 			const { text: translatedText } = await generateText({
 				model: geminiModel,
 				messages: [
 					{
 						role: "system",
-						content: "Você é um tradutor profissional especializado em legendas de filmes e séries, com foco especial em português brasileiro. IMPORTANTE: Preserve cuidadosamente toda a formatação original, incluindo tags HTML como <i> para itálico. Separe os segmentos de tradução com o símbolo '|'. Mantenha o estilo e tom da linguagem original. Nomes próprios não devem ser traduzidos. Preserve os nomes de programas como 'The Amazing Race'. CRÍTICO: Preserve EXATAMENTE a estrutura de quebras de linha do texto original. Quando encontrar diálogos com hífens em linhas separadas (como '-Texto1\\n-Texto2\\n-Texto3'), mantenha cada fala em sua própria linha com quebra de linha (\\n). NUNCA una múltiplas falas em uma única linha. Exemplo: '-Olá.\\n-Oi!' deve se tornar '-Olá.\\n-Oi!' e NÃO '-Olá. -Oi!'. Mantenha quebras de linha originais com \\n.",
+						content: systemPrompt,
 					},
 					{
 						role: "user",
@@ -245,6 +349,7 @@ export async function POST(request: Request) {
 				let language = '';
 				let apiKey = '';
 				let validationOnly = false;
+				let filename = '';
 				
 				try {
 					const requestData = await request.json();
@@ -252,6 +357,7 @@ export async function POST(request: Request) {
 					language = requestData.language || 'Portuguese (Brazil)';
 					apiKey = requestData.apiKey || '';
 					validationOnly = requestData.validationOnly || false;
+					filename = requestData.filename || '';
 				} catch (parseError) {
 					const errorData: TranslationProgress = {
 						type: 'error',
@@ -339,11 +445,16 @@ export async function POST(request: Request) {
 					return;
 				}
 
+				// Extrair contexto do nome do arquivo
+				const fileContext = extractFileContext(filename);
+				console.log(`Filename: ${filename}, Context: ${fileContext}`); // Debug log
+
 				// Group segments into batches for efficient processing
 				const groups = groupSegmentsByTokenLength(segments, MAX_TOKENS_IN_SEGMENT);
 				const totalChunks = groups.length;
 				
 				// Send initial progress
+				const contextInfo = fileContext ? ` Context: ${fileContext}` : '';
 				const initialProgress: TranslationProgress = {
 					type: 'progress',
 					translated: 0,
@@ -351,7 +462,7 @@ export async function POST(request: Request) {
 					percentage: 0,
 					currentChunk: 0,
 					totalChunks,
-					message: `Starting translation of ${totalSegments} subtitles in ${totalChunks} chunks`
+					message: `Starting translation of ${totalSegments} subtitles in ${totalChunks} chunks.${contextInfo}`
 				};
 				controller.enqueue(encoder.encode(`data: ${JSON.stringify(initialProgress)}\n\n`));
 
@@ -398,7 +509,8 @@ export async function POST(request: Request) {
 							3, // maxRetries
 							segmentGroup, // Pass original segments for splitting detection
 							onQuotaError, // Quota error callback
-							onQuotaRetry  // Quota retry callback
+							onQuotaRetry,  // Quota retry callback
+							fileContext // File context for better translation
 						);
 						
 						if (retryAfter) {
@@ -459,7 +571,8 @@ export async function POST(request: Request) {
 										5, // More retries for single segments
 										undefined, // No original segments for single segment
 										onQuotaError, // Quota error callback
-										onQuotaRetry  // Quota retry callback
+										onQuotaRetry,  // Quota retry callback
+										fileContext // File context for better translation
 									);
 									const translatedChunks = result.split("|");
 									
